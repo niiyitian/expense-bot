@@ -21,7 +21,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    BufferedInputFile, BotCommand, ForceReply
+    BufferedInputFile, BotCommand, ForceReply, ReplyKeyboardMarkup, KeyboardButton
 )
 
 import db
@@ -73,6 +73,30 @@ def delete_keyboard(expense_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+MENU_BUTTONS = {
+    "log": "➕ Log",
+    "summary": "📊 Summary",
+    "recent": "📝 Recent",
+    "categories": "📁 Categories",
+    "undo": "↩️ Undo",
+    "export": "📄 Export",
+}
+
+
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    # is_persistent=False (the default) means this stays tucked behind the
+    # grid-toggle icon next to the emoji button, instead of always being open.
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_BUTTONS["log"]), KeyboardButton(text=MENU_BUTTONS["summary"])],
+            [KeyboardButton(text=MENU_BUTTONS["recent"]), KeyboardButton(text=MENU_BUTTONS["categories"])],
+            [KeyboardButton(text=MENU_BUTTONS["undo"]), KeyboardButton(text=MENU_BUTTONS["export"])],
+        ],
+        resize_keyboard=True,
+        input_field_placeholder="Type an expense, e.g. coffee 5.50"
+    )
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await db.ensure_default_categories(message.from_user.id)
@@ -81,8 +105,9 @@ async def cmd_start(message: Message):
         "Just send me a message like:\n"
         "<code>coffee 5.50</code> or <code>5.50 coffee</code>\n\n"
         "I'll log it and ask you to tag a category.\n\n"
-        "Tap the ☰ menu icon next to the text box anytime for all commands.",
-        parse_mode="HTML"
+        "Tap the grid icon next to the emoji button anytime for quick actions.",
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard()
     )
 
 
@@ -206,6 +231,36 @@ async def cmd_log(message: Message):
         parse_mode="HTML",
         reply_markup=ForceReply(input_field_placeholder="coffee 5.50")
     )
+
+
+@dp.message(F.text == MENU_BUTTONS["log"])
+async def btn_log(message: Message):
+    await cmd_log(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["summary"])
+async def btn_summary(message: Message):
+    await send_combined_summary(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["recent"])
+async def btn_recent(message: Message):
+    await cmd_recent(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["undo"])
+async def btn_undo(message: Message):
+    await cmd_undo(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["categories"])
+async def btn_categories(message: Message):
+    await show_or_add_category(message, None)
+
+
+@dp.message(F.text == MENU_BUTTONS["export"])
+async def btn_export(message: Message):
+    await cmd_export(message)
 
 
 @dp.message(F.text & ~F.text.startswith("/"))
