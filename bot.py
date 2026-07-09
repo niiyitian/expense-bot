@@ -21,7 +21,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    BufferedInputFile, ReplyKeyboardMarkup, KeyboardButton, BotCommand
+    BufferedInputFile, ReplyKeyboardMarkup, KeyboardButton, BotCommand, ForceReply
 )
 
 import db
@@ -75,6 +75,7 @@ def delete_keyboard(expense_id: int) -> InlineKeyboardMarkup:
 
 # Persistent button menu pinned above the keyboard (tap instead of typing /commands)
 MENU_BUTTONS = {
+    "log": "➕ Log",
     "summary": "📊 Summary",
     "recent": "📝 Recent",
     "categories": "📁 Categories",
@@ -86,9 +87,9 @@ MENU_BUTTONS = {
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_BUTTONS["summary"]), KeyboardButton(text=MENU_BUTTONS["recent"])],
-            [KeyboardButton(text=MENU_BUTTONS["categories"]), KeyboardButton(text=MENU_BUTTONS["undo"])],
-            [KeyboardButton(text=MENU_BUTTONS["export"])],
+            [KeyboardButton(text=MENU_BUTTONS["log"]), KeyboardButton(text=MENU_BUTTONS["summary"])],
+            [KeyboardButton(text=MENU_BUTTONS["recent"]), KeyboardButton(text=MENU_BUTTONS["categories"])],
+            [KeyboardButton(text=MENU_BUTTONS["undo"]), KeyboardButton(text=MENU_BUTTONS["export"])],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -224,6 +225,20 @@ async def cmd_export(message: Message):
     await message.answer_document(file, caption="📄 Your full expense history")
 
 
+@dp.message(Command("log"))
+async def cmd_log(message: Message):
+    await btn_log(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["log"])
+async def btn_log(message: Message):
+    await message.answer(
+        "💸 What did you spend on?\nE.g. <code>coffee 5.50</code>",
+        parse_mode="HTML",
+        reply_markup=ForceReply(input_field_placeholder="coffee 5.50")
+    )
+
+
 @dp.message(F.text == MENU_BUTTONS["summary"])
 async def btn_summary(message: Message):
     await send_combined_summary(message)
@@ -296,6 +311,7 @@ async def handle_delete(callback: CallbackQuery):
 async def set_menu_button():
     """Registers the ☰ menu icon next to the text box with a command dropdown."""
     await bot.set_my_commands([
+        BotCommand(command="log", description="Log a new expense"),
         BotCommand(command="summary", description="Today / week / month spending"),
         BotCommand(command="recent", description="Browse & delete recent entries"),
         BotCommand(command="categories", description="View/add categories"),
