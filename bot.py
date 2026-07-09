@@ -21,7 +21,7 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    BufferedInputFile
+    BufferedInputFile, ReplyKeyboardMarkup, KeyboardButton, BotCommand
 )
 
 import db
@@ -73,6 +73,31 @@ def delete_keyboard(expense_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+# Persistent button menu pinned above the keyboard (tap instead of typing /commands)
+MENU_BUTTONS = {
+    "today": "📊 Today",
+    "week": "📅 Week",
+    "month": "🗓 Month",
+    "recent": "📝 Recent",
+    "undo": "↩️ Undo",
+    "categories": "📁 Categories",
+    "export": "📄 Export",
+}
+
+
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=MENU_BUTTONS["today"]), KeyboardButton(text=MENU_BUTTONS["week"]), KeyboardButton(text=MENU_BUTTONS["month"])],
+            [KeyboardButton(text=MENU_BUTTONS["recent"]), KeyboardButton(text=MENU_BUTTONS["undo"])],
+            [KeyboardButton(text=MENU_BUTTONS["categories"]), KeyboardButton(text=MENU_BUTTONS["export"])],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Type an expense, e.g. coffee 5.50"
+    )
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await db.ensure_default_categories(message.from_user.id)
@@ -81,26 +106,25 @@ async def cmd_start(message: Message):
         "Just send me a message like:\n"
         "<code>coffee 5.50</code> or <code>5.50 coffee</code>\n\n"
         "I'll log it and ask you to tag a category.\n\n"
-        "<b>Commands:</b>\n"
-        "/today — today's spending\n"
-        "/week — this week's spending\n"
-        "/month — this month's spending\n"
-        "/recent — browse & delete recent entries\n"
-        "/undo — remove your last entry\n"
-        "/categories — view/add categories\n"
-        "/export — download all expenses as CSV",
-        parse_mode="HTML"
+        "Use the buttons below anytime, or tap the ☰ menu icon next to "
+        "the text box for the same options.",
+        parse_mode="HTML",
+        reply_markup=main_menu_keyboard()
     )
 
 
 @dp.message(Command("categories"))
 async def cmd_categories(message: Message):
     parts = message.text.split(maxsplit=1)
+    new_cat = parts[1].strip() if len(parts) > 1 else None
+    await show_or_add_category(message, new_cat)
+
+
+async def show_or_add_category(message: Message, new_cat: str | None):
     user_id = message.from_user.id
     await db.ensure_default_categories(user_id)
 
-    if len(parts) > 1:
-        new_cat = parts[1].strip()
+    if new_cat:
         added = await db.add_category(user_id, new_cat)
         if added:
             await message.answer(f"✅ Added category: {new_cat}")
@@ -177,6 +201,41 @@ async def cmd_export(message: Message):
     await message.answer_document(file, caption="📄 Your full expense history")
 
 
+@dp.message(F.text == MENU_BUTTONS["today"])
+async def btn_today(message: Message):
+    await send_summary(message, db.start_of_today(), "Today")
+
+
+@dp.message(F.text == MENU_BUTTONS["week"])
+async def btn_week(message: Message):
+    await send_summary(message, db.start_of_week(), "This week")
+
+
+@dp.message(F.text == MENU_BUTTONS["month"])
+async def btn_month(message: Message):
+    await send_summary(message, db.start_of_month(), "This month")
+
+
+@dp.message(F.text == MENU_BUTTONS["recent"])
+async def btn_recent(message: Message):
+    await cmd_recent(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["undo"])
+async def btn_undo(message: Message):
+    await cmd_undo(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["categories"])
+async def btn_categories(message: Message):
+    await show_or_add_category(message, None)
+
+
+@dp.message(F.text == MENU_BUTTONS["export"])
+async def btn_export(message: Message):
+    await cmd_export(message)
+
+
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_expense_text(message: Message):
     parsed = parse_expense(message.text)
@@ -221,8 +280,22 @@ async def handle_delete(callback: CallbackQuery):
     await callback.answer()
 
 
+async def set_menu_button():
+    """Registers the ☰ menu icon next to the text box with a command dropdown."""
+    await bot.set_my_commands([
+        BotCommand(command="today", description="Today's spending"),
+        BotCommand(command="week", description="This week's spending"),
+        BotCommand(command="month", description="This month's spending"),
+        BotCommand(command="recent", description="Browse & delete recent entries"),
+        BotCommand(command="undo", description="Remove your last entry"),
+        BotCommand(command="categories", description="View/add categories"),
+        BotCommand(command="export", description="Download all expenses as CSV"),
+    ])
+
+
 async def main():
     await db.init_db()
+    await set_menu_button()
     await dp.start_polling(bot)
 
 
