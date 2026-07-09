@@ -75,12 +75,10 @@ def delete_keyboard(expense_id: int) -> InlineKeyboardMarkup:
 
 # Persistent button menu pinned above the keyboard (tap instead of typing /commands)
 MENU_BUTTONS = {
-    "today": "📊 Today",
-    "week": "📅 Week",
-    "month": "🗓 Month",
+    "summary": "📊 Summary",
     "recent": "📝 Recent",
-    "undo": "↩️ Undo",
     "categories": "📁 Categories",
+    "undo": "↩️ Undo",
     "export": "📄 Export",
 }
 
@@ -88,9 +86,9 @@ MENU_BUTTONS = {
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_BUTTONS["today"]), KeyboardButton(text=MENU_BUTTONS["week"]), KeyboardButton(text=MENU_BUTTONS["month"])],
-            [KeyboardButton(text=MENU_BUTTONS["recent"]), KeyboardButton(text=MENU_BUTTONS["undo"])],
-            [KeyboardButton(text=MENU_BUTTONS["categories"]), KeyboardButton(text=MENU_BUTTONS["export"])],
+            [KeyboardButton(text=MENU_BUTTONS["summary"]), KeyboardButton(text=MENU_BUTTONS["recent"])],
+            [KeyboardButton(text=MENU_BUTTONS["categories"]), KeyboardButton(text=MENU_BUTTONS["undo"])],
+            [KeyboardButton(text=MENU_BUTTONS["export"])],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -140,6 +138,11 @@ async def show_or_add_category(message: Message, new_cat: str | None):
     )
 
 
+@dp.message(Command("summary"))
+async def cmd_summary(message: Message):
+    await send_combined_summary(message)
+
+
 @dp.message(Command("today"))
 async def cmd_today(message: Message):
     await send_summary(message, db.start_of_today(), "Today")
@@ -164,6 +167,26 @@ async def send_summary(message: Message, since, label: str):
     for cat, amount, count in rows:
         pct = (amount / total * 100) if total else 0
         lines.append(f"• {cat}: ${amount:.2f} ({count}x, {pct:.0f}%)")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+async def send_combined_summary(message: Message):
+    user_id = message.from_user.id
+    periods = [
+        (db.start_of_today(), "Today"),
+        (db.start_of_week(), "This week"),
+        (db.start_of_month(), "This month"),
+    ]
+    lines = ["📊 <b>Spending Summary</b>\n"]
+    any_data = False
+    for since, label in periods:
+        rows, total = await db.get_summary(user_id, since)
+        if rows:
+            any_data = True
+        lines.append(f"<b>{label}:</b> ${total:.2f}")
+    if not any_data:
+        await message.answer("No expenses logged yet.")
+        return
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
@@ -201,19 +224,9 @@ async def cmd_export(message: Message):
     await message.answer_document(file, caption="📄 Your full expense history")
 
 
-@dp.message(F.text == MENU_BUTTONS["today"])
-async def btn_today(message: Message):
-    await send_summary(message, db.start_of_today(), "Today")
-
-
-@dp.message(F.text == MENU_BUTTONS["week"])
-async def btn_week(message: Message):
-    await send_summary(message, db.start_of_week(), "This week")
-
-
-@dp.message(F.text == MENU_BUTTONS["month"])
-async def btn_month(message: Message):
-    await send_summary(message, db.start_of_month(), "This month")
+@dp.message(F.text == MENU_BUTTONS["summary"])
+async def btn_summary(message: Message):
+    await send_combined_summary(message)
 
 
 @dp.message(F.text == MENU_BUTTONS["recent"])
@@ -283,13 +296,14 @@ async def handle_delete(callback: CallbackQuery):
 async def set_menu_button():
     """Registers the ☰ menu icon next to the text box with a command dropdown."""
     await bot.set_my_commands([
-        BotCommand(command="today", description="Today's spending"),
-        BotCommand(command="week", description="This week's spending"),
-        BotCommand(command="month", description="This month's spending"),
+        BotCommand(command="summary", description="Today / week / month spending"),
         BotCommand(command="recent", description="Browse & delete recent entries"),
-        BotCommand(command="undo", description="Remove your last entry"),
         BotCommand(command="categories", description="View/add categories"),
+        BotCommand(command="undo", description="Remove your last entry"),
         BotCommand(command="export", description="Download all expenses as CSV"),
+        BotCommand(command="today", description="Today's spending only"),
+        BotCommand(command="week", description="This week's spending only"),
+        BotCommand(command="month", description="This month's spending only"),
     ])
 
 
