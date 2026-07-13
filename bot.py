@@ -21,7 +21,8 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    BufferedInputFile, BotCommand, ForceReply, ReplyKeyboardMarkup, KeyboardButton
+    BufferedInputFile, BotCommand, ForceReply, ReplyKeyboardMarkup, KeyboardButton,
+    MenuButtonDefault
 )
 
 import db
@@ -75,6 +76,7 @@ def delete_keyboard(expense_id: int) -> InlineKeyboardMarkup:
 
 MENU_BUTTONS = {
     "log": "➕ Log",
+    "money": "💰 Add Money",
     "summary": "📊 Summary",
     "recent": "📝 Recent",
     "categories": "📁 Categories",
@@ -82,15 +84,20 @@ MENU_BUTTONS = {
     "export": "📄 Export",
 }
 
+# Prompt text markers used to tell an expense reply apart from an income reply
+LOG_PROMPT_TEXT = "💸 What did you spend on?\nE.g. <code>coffee 5.50</code>"
+MONEY_PROMPT_TEXT = "💰 What did you receive, and for what?\nE.g. <code>50 sold shoes</code>"
+
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     # is_persistent=False (the default) means this stays tucked behind the
     # grid-toggle icon next to the emoji button, instead of always being open.
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=MENU_BUTTONS["log"]), KeyboardButton(text=MENU_BUTTONS["summary"])],
-            [KeyboardButton(text=MENU_BUTTONS["recent"]), KeyboardButton(text=MENU_BUTTONS["categories"])],
-            [KeyboardButton(text=MENU_BUTTONS["undo"]), KeyboardButton(text=MENU_BUTTONS["export"])],
+            [KeyboardButton(text=MENU_BUTTONS["log"]), KeyboardButton(text=MENU_BUTTONS["money"])],
+            [KeyboardButton(text=MENU_BUTTONS["summary"]), KeyboardButton(text=MENU_BUTTONS["recent"])],
+            [KeyboardButton(text=MENU_BUTTONS["categories"]), KeyboardButton(text=MENU_BUTTONS["undo"])],
+            [KeyboardButton(text=MENU_BUTTONS["export"])],
         ],
         resize_keyboard=True,
         input_field_placeholder="Type an expense, e.g. coffee 5.50"
@@ -105,6 +112,9 @@ async def cmd_start(message: Message):
         "Just send me a message like:\n"
         "<code>coffee 5.50</code> or <code>5.50 coffee</code>\n\n"
         "I'll log it and ask you to tag a category.\n\n"
+        "Got money in (sold something, got paid back)? Send it with a "
+        "<code>+</code> in front, like <code>+50 sold shoes</code>, or use "
+        "the 💰 Add Money button.\n\n"
         "Tap the grid icon next to the emoji button anytime for quick actions.",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard()
@@ -160,13 +170,17 @@ async def cmd_month(message: Message):
 
 async def send_summary(message: Message, since, label: str):
     rows, total = await db.get_summary(message.from_user.id, since)
-    if not rows:
-        await message.answer(f"No expenses logged for {label.lower()} yet.")
+    income_total = await db.get_income_total(message.from_user.id, since)
+    if not rows and not income_total:
+        await message.answer(f"Nothing logged for {label.lower()} yet.")
         return
-    lines = [f"📊 <b>{label}'s spending: ${total:.2f}</b>\n"]
+    lines = [f"📊 <b>{label}</b>\n"]
+    lines.append(f"💸 Spent: ${total:.2f}")
     for cat, amount, count in rows:
         pct = (amount / total * 100) if total else 0
-        lines.append(f"• {cat}: ${amount:.2f} ({count}x, {pct:.0f}%)")
+        lines.append(f"   • {cat}: ${amount:.2f} ({count}x, {pct:.0f}%)")
+    lines.append(f"\n💰 Received: ${income_total:.2f}")
+    lines.append(f"\n<b>Net: ${income_total - total:.2f}</b>")
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
@@ -177,28 +191,41 @@ async def send_combined_summary(message: Message):
         (db.start_of_week(), "This week"),
         (db.start_of_month(), "This month"),
     ]
-    lines = ["📊 <b>Spending Summary</b>\n"]
+    lines = ["📊 <b>Summary</b>\n"]
     any_data = False
     for since, label in periods:
         rows, total = await db.get_summary(user_id, since)
-        if rows:
+        income_total = await db.get_income_total(user_id, since)
+        if rows or income_total:
             any_data = True
-        lines.append(f"<b>{label}:</b> ${total:.2f}")
+        net = income_total - total
+        lines.append(f"<b>{label}:</b> spent ${total:.2f}, received ${income_total:.2f}, net ${net:.2f}")
     if not any_data:
-        await message.answer("No expenses logged yet.")
+        await message.answer("Nothing logged yet.")
         return
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @dp.message(Command("undo"))
 async def cmd_undo(message: Message):
-    last = await db.get_last_expense(message.from_user.id)
-    if not last:
+    user_id = message.from_user.id
+    last_expense = await db.get_last_expense(user_id)
+    last_income = await db.get_last_income(user_id)
+
+    if not last_expense and not last_income:
         await message.answer("Nothing to undo.")
         return
-    expense_id, amount, desc, cat, created_at = last
-    await db.delete_expense(expense_id, message.from_user.id)
-    await message.answer(f"🗑 Removed: ${amount:.2f} — {desc}")
+
+    # Compare timestamps (both are ISO strings, so string comparison works) to
+    # find whichever was logged most recently, expense or income.
+    if last_income and (not last_expense or last_income[3] > last_expense[4]):
+        income_id, amount, desc, created_at = last_income
+        await db.delete_income(income_id, user_id)
+        await message.answer(f"🗑 Removed income: ${amount:.2f} — {desc}")
+    else:
+        expense_id, amount, desc, cat, created_at = last_expense
+        await db.delete_expense(expense_id, user_id)
+        await message.answer(f"🗑 Removed: ${amount:.2f} — {desc}")
 
 
 @dp.message(Command("recent"))
@@ -227,15 +254,29 @@ async def cmd_export(message: Message):
 @dp.message(Command("log"))
 async def cmd_log(message: Message):
     await message.answer(
-        "💸 What did you spend on?\nE.g. <code>coffee 5.50</code>",
+        LOG_PROMPT_TEXT,
         parse_mode="HTML",
         reply_markup=ForceReply(input_field_placeholder="coffee 5.50")
+    )
+
+
+@dp.message(Command("money"))
+async def cmd_money(message: Message):
+    await message.answer(
+        MONEY_PROMPT_TEXT,
+        parse_mode="HTML",
+        reply_markup=ForceReply(input_field_placeholder="50 sold shoes")
     )
 
 
 @dp.message(F.text == MENU_BUTTONS["log"])
 async def btn_log(message: Message):
     await cmd_log(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["money"])
+async def btn_money(message: Message):
+    await cmd_money(message)
 
 
 @dp.message(F.text == MENU_BUTTONS["summary"])
@@ -263,9 +304,22 @@ async def btn_export(message: Message):
     await cmd_export(message)
 
 
+def is_income_message(message: Message) -> bool:
+    if message.text.strip().startswith("+"):
+        return True
+    if message.reply_to_message and message.reply_to_message.text:
+        return message.reply_to_message.text.startswith("💰")
+    return False
+
+
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_expense_text(message: Message):
-    parsed = parse_expense(message.text)
+    if is_income_message(message):
+        await handle_income_text(message)
+        return
+
+    text = message.text.lstrip("+").strip()
+    parsed = parse_expense(text)
     if not parsed:
         await message.answer(
             "I couldn't find an amount in that message. Try something like "
@@ -288,6 +342,25 @@ async def handle_expense_text(message: Message):
     )
 
 
+async def handle_income_text(message: Message):
+    text = message.text.lstrip("+").strip()
+    parsed = parse_expense(text)
+    if not parsed:
+        await message.answer(
+            "I couldn't find an amount in that message. Try something like "
+            "<code>50 sold shoes</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    amount, description = parsed
+    if description == "Uncategorized expense":
+        description = "Income"
+    user_id = message.from_user.id
+    await db.add_income(user_id, amount, description)
+    await message.answer(f"💰 Added <b>${amount:.2f}</b> — {description}", parse_mode="HTML")
+
+
 @dp.callback_query(F.data.startswith("cat:"))
 async def handle_category_choice(callback: CallbackQuery):
     _, expense_id, category = callback.data.split(":", 2)
@@ -308,9 +381,12 @@ async def handle_delete(callback: CallbackQuery):
 
 
 async def set_menu_button():
-    """Registers the ☰ menu icon next to the text box with a command dropdown."""
+    """Registers commands (for the '/' autocomplete) and explicitly reverts
+    the chat menu button to default, so only the keyboard-toggle icon next
+    to the emoji button shows — not the separate blue commands icon."""
     await bot.set_my_commands([
         BotCommand(command="log", description="Log a new expense"),
+        BotCommand(command="money", description="Add money received (sales, transfers)"),
         BotCommand(command="summary", description="Today / week / month spending"),
         BotCommand(command="recent", description="Browse & delete recent entries"),
         BotCommand(command="categories", description="View/add categories"),
@@ -320,6 +396,7 @@ async def set_menu_button():
         BotCommand(command="week", description="This week's spending only"),
         BotCommand(command="month", description="This month's spending only"),
     ])
+    await bot.set_chat_menu_button(menu_button=MenuButtonDefault())
 
 
 async def main():

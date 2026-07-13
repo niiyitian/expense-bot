@@ -35,6 +35,15 @@ async def init_db():
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS income (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                description TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS categories (
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
@@ -118,6 +127,47 @@ async def get_last_expense(user_id: int):
         return await cur.fetchone()
 
 
+async def add_income(user_id: int, amount: float, description: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO income (user_id, amount, description, created_at)
+               VALUES (?, ?, ?, ?)""",
+            (user_id, amount, description, datetime.utcnow().isoformat())
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_last_income(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT id, amount, description, created_at
+               FROM income WHERE user_id = ? ORDER BY id DESC LIMIT 1""",
+            (user_id,)
+        )
+        return await cur.fetchone()
+
+
+async def delete_income(income_id: int, user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "DELETE FROM income WHERE id = ? AND user_id = ?", (income_id, user_id)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def get_income_total(user_id: int, since: datetime) -> float:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT COALESCE(SUM(amount), 0) FROM income
+               WHERE user_id = ? AND created_at >= ?""",
+            (user_id, since.isoformat())
+        )
+        (total,) = await cur.fetchone()
+        return total
+
+
 async def get_recent(user_id: int, limit: int = 10):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -150,12 +200,22 @@ async def export_csv(user_id: int) -> io.StringIO:
                FROM expenses WHERE user_id = ? ORDER BY id""",
             (user_id,)
         )
-        rows = await cur.fetchall()
+        expense_rows = await cur.fetchall()
+
+        cur = await db.execute(
+            """SELECT id, amount, description, created_at
+               FROM income WHERE user_id = ? ORDER BY id""",
+            (user_id,)
+        )
+        income_rows = await cur.fetchall()
 
     buf = io.StringIO()
     writer = csv.writer(buf)
-    writer.writerow(["id", "amount", "description", "category", "created_at"])
-    writer.writerows(rows)
+    writer.writerow(["type", "id", "amount", "description", "category", "created_at"])
+    for r in expense_rows:
+        writer.writerow(["expense", r[0], r[1], r[2], r[3], r[4]])
+    for r in income_rows:
+        writer.writerow(["income", r[0], r[1], r[2], "", r[3]])
     buf.seek(0)
     return buf
 
