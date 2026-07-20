@@ -74,6 +74,15 @@ def delete_keyboard(expense_id: int) -> InlineKeyboardMarkup:
     ])
 
 
+async def reply(message: Message, text: str, **kwargs):
+    """Like message.answer, but re-attaches the persistent menu keyboard by
+    default on every response — so it can never silently drop out of view,
+    even if a Telegram client forgets it between sessions."""
+    kwargs.setdefault("parse_mode", "HTML")
+    kwargs.setdefault("reply_markup", main_menu_keyboard())
+    await message.answer(text, **kwargs)
+
+
 MENU_BUTTONS = {
     "log": "➕ Log",
     "money": "💰 Add Money",
@@ -135,10 +144,10 @@ async def cmd_start(message: Message):
 async def cmd_rename(message: Message):
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
-        await message.answer(
+        await reply(
+            message,
             "Usage: <code>/rename OldName NewName</code>\n"
-            "E.g. <code>/rename Other Social</code>",
-            parse_mode="HTML"
+            "E.g. <code>/rename Other Social</code>"
         )
         return
 
@@ -148,9 +157,9 @@ async def cmd_rename(message: Message):
 
     ok = await db.rename_category(user_id, old_name, new_name)
     if ok:
-        await message.answer(f"✅ Renamed '{old_name}' to '{new_name}' — past expenses updated too.")
+        await reply(message, f"✅ Renamed '{old_name}' to '{new_name}' — past expenses updated too.")
     else:
-        await message.answer(f"Couldn't find a category called '{old_name}'.")
+        await reply(message, f"Couldn't find a category called '{old_name}'.")
 
 
 @dp.message(Command("categories"))
@@ -167,17 +176,17 @@ async def show_or_add_category(message: Message, new_cat: str | None):
     if new_cat:
         added = await db.add_category(user_id, new_cat)
         if added:
-            await message.answer(f"✅ Added category: {new_cat}")
+            await reply(message, f"✅ Added category: {new_cat}")
         else:
-            await message.answer(f"'{new_cat}' already exists.")
+            await reply(message, f"'{new_cat}' already exists.")
         return
 
     cats = await db.get_categories(user_id)
-    await message.answer(
+    await reply(
+        message,
         "📁 <b>Your categories:</b>\n" + "\n".join(f"• {c}" for c in cats) +
         "\n\nAdd a new one with: <code>/categories Groceries</code>"
-        "\nRename one with: <code>/rename Other Social</code>",
-        parse_mode="HTML"
+        "\nRename one with: <code>/rename Other Social</code>"
     )
 
 
@@ -205,7 +214,7 @@ async def send_summary(message: Message, since, label: str):
     rows, total = await db.get_summary(message.from_user.id, since)
     income_total = await db.get_income_total(message.from_user.id, since)
     if not rows and not income_total:
-        await message.answer(f"Nothing logged for {label.lower()} yet.")
+        await reply(message, f"Nothing logged for {label.lower()} yet.")
         return
     lines = [f"📊 <b>{label}</b>\n"]
     lines.append(f"💸 Spent: ${total:.2f}")
@@ -214,7 +223,7 @@ async def send_summary(message: Message, since, label: str):
         lines.append(f"   • {cat}: ${amount:.2f} ({count}x, {pct:.0f}%)")
     lines.append(f"\n💰 Received: ${income_total:.2f}")
     lines.append(f"\n<b>Net: ${income_total - total:.2f}</b>")
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await reply(message, "\n".join(lines))
 
 
 async def send_combined_summary(message: Message):
@@ -242,9 +251,9 @@ async def send_combined_summary(message: Message):
     lines.append(f"🔴 <b>Debt remaining:</b> ${debt_remaining:.2f}")
 
     if not any_data and saved == 0 and returned == 0 and withdrawn == 0:
-        await message.answer("Nothing logged yet.")
+        await reply(message, "Nothing logged yet.")
         return
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await reply(message, "\n".join(lines))
 
 
 @dp.message(Command("savings"))
@@ -277,22 +286,22 @@ async def cmd_savings(message: Message):
             note_suffix = f" — {note}" if note else ""
             lines.append(f"{icons[entry_type]} ${amount:.2f}{note_suffix} ({created_at[:10]})")
 
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await reply(message, "\n".join(lines))
 
 
 @dp.message(Command("setdebt"))
 async def cmd_setdebt(message: Message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("Usage: <code>/setdebt 5340</code>", parse_mode="HTML")
+        await reply(message, "Usage: <code>/setdebt 5340</code>")
         return
     try:
         amount = float(parts[1].replace(",", "").replace("$", ""))
     except ValueError:
-        await message.answer("Please provide a valid number, e.g. <code>/setdebt 5340</code>", parse_mode="HTML")
+        await reply(message, "Please provide a valid number, e.g. <code>/setdebt 5340</code>")
         return
     await db.set_starting_debt(message.from_user.id, amount)
-    await message.answer(f"✅ Starting debt set to ${amount:.2f}")
+    await reply(message, f"✅ Starting debt set to ${amount:.2f}")
 
 
 @dp.message(Command("undo"))
@@ -311,7 +320,7 @@ async def cmd_undo(message: Message):
         candidates.append(("savings", last_savings[4], last_savings))
 
     if not candidates:
-        await message.answer("Nothing to undo.")
+        await reply(message, "Nothing to undo.")
         return
 
     # Pick whichever was logged most recently (ISO timestamp strings compare correctly)
@@ -320,23 +329,23 @@ async def cmd_undo(message: Message):
     if kind == "expense":
         expense_id, amount, desc, cat, created_at = row
         await db.delete_expense(expense_id, user_id)
-        await message.answer(f"🗑 Removed: ${amount:.2f} — {desc}")
+        await reply(message, f"🗑 Removed: ${amount:.2f} — {desc}")
     elif kind == "income":
         income_id, amount, desc, created_at = row
         await db.delete_income(income_id, user_id)
-        await message.answer(f"🗑 Removed income: ${amount:.2f} — {desc}")
+        await reply(message, f"🗑 Removed income: ${amount:.2f} — {desc}")
     else:
         savings_id, entry_type, amount, note, created_at = row
         label = {"save": "savings", "return": "debt repayment", "withdraw": "withdrawal"}[entry_type]
         await db.delete_savings_entry(savings_id, user_id)
-        await message.answer(f"🗑 Removed {label}: ${amount:.2f}")
+        await reply(message, f"🗑 Removed {label}: ${amount:.2f}")
 
 
 @dp.message(Command("recent"))
 async def cmd_recent(message: Message):
     rows = await db.get_recent(message.from_user.id, limit=10)
     if not rows:
-        await message.answer("No expenses logged yet.")
+        await reply(message, "No expenses logged yet.")
         return
     for expense_id, amount, desc, cat, created_at in rows:
         cat_label = cat or "uncategorized"
@@ -510,10 +519,10 @@ async def handle_money_text(message: Message):
     # entry_type == "expense"
     parsed = parse_expense(text)
     if not parsed:
-        await message.answer(
+        await reply(
+            message,
             "I couldn't find an amount in that message. Try something like "
-            "<code>coffee 5.50</code>",
-            parse_mode="HTML"
+            "<code>coffee 5.50</code>"
         )
         return
 
@@ -534,10 +543,10 @@ async def handle_money_text(message: Message):
 async def handle_income_text(message: Message, text: str):
     parsed = parse_expense(text)
     if not parsed:
-        await message.answer(
+        await reply(
+            message,
             "I couldn't find an amount in that message. Try something like "
-            "<code>50 sold shoes</code>",
-            parse_mode="HTML"
+            "<code>50 sold shoes</code>"
         )
         return
 
@@ -546,17 +555,17 @@ async def handle_income_text(message: Message, text: str):
         description = "Income"
     user_id = message.from_user.id
     await db.add_income(user_id, amount, description)
-    await message.answer(f"💰 Added <b>${amount:.2f}</b> — {description}", parse_mode="HTML")
+    await reply(message, f"💰 Added <b>${amount:.2f}</b> — {description}")
 
 
 async def handle_savings_text(message: Message, entry_type: str, text: str):
     parsed = parse_expense(text)
     if not parsed:
         example = {"save": "2000", "withdraw": "300 rent", "return": "500"}[entry_type]
-        await message.answer(
+        await reply(
+            message,
             f"I couldn't find an amount in that message. Try something like "
-            f"<code>{example}</code>",
-            parse_mode="HTML"
+            f"<code>{example}</code>"
         )
         return
 
@@ -572,20 +581,11 @@ async def handle_savings_text(message: Message, entry_type: str, text: str):
     debt_remaining = max(starting_debt - returned, 0)
 
     if entry_type == "save":
-        await message.answer(
-            f"🏦 Saved <b>${amount:.2f}</b>\nSavings balance: ${savings_balance:.2f}",
-            parse_mode="HTML"
-        )
+        await reply(message, f"🏦 Saved <b>${amount:.2f}</b>\nSavings balance: ${savings_balance:.2f}")
     elif entry_type == "withdraw":
-        await message.answer(
-            f"🏧 Withdrew <b>${amount:.2f}</b>\nSavings balance: ${savings_balance:.2f}",
-            parse_mode="HTML"
-        )
+        await reply(message, f"🏧 Withdrew <b>${amount:.2f}</b>\nSavings balance: ${savings_balance:.2f}")
     else:
-        await message.answer(
-            f"📉 Repaid <b>${amount:.2f}</b> towards debt\nDebt remaining: ${debt_remaining:.2f}",
-            parse_mode="HTML"
-        )
+        await reply(message, f"📉 Repaid <b>${amount:.2f}</b> towards debt\nDebt remaining: ${debt_remaining:.2f}")
 
 
 @dp.callback_query(F.data.startswith("cat:"))
