@@ -44,6 +44,22 @@ async def init_db():
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS savings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                type TEXT NOT NULL,          -- 'save', 'return' (debt repay), or 'withdraw'
+                amount REAL NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                user_id INTEGER PRIMARY KEY,
+                starting_debt REAL NOT NULL
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS categories (
                 user_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
@@ -87,6 +103,37 @@ async def add_category(user_id: int, name: str) -> bool:
             return True
         except aiosqlite.IntegrityError:
             return False
+
+
+async def rename_category(user_id: int, old_name: str, new_name: str) -> bool:
+    """Renames a category and retags every existing expense that used it."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM categories WHERE user_id = ? AND name = ?",
+            (user_id, old_name)
+        )
+        (exists,) = await cur.fetchone()
+        if not exists:
+            return False
+
+        try:
+            await db.execute(
+                "UPDATE categories SET name = ? WHERE user_id = ? AND name = ?",
+                (new_name, user_id, old_name)
+            )
+        except aiosqlite.IntegrityError:
+            # new_name already exists as a separate category — merge into it instead
+            await db.execute(
+                "DELETE FROM categories WHERE user_id = ? AND name = ?",
+                (user_id, old_name)
+            )
+
+        await db.execute(
+            "UPDATE expenses SET category = ? WHERE user_id = ? AND category = ?",
+            (new_name, user_id, old_name)
+        )
+        await db.commit()
+        return True
 
 
 async def add_expense(user_id: int, amount: float, description: str) -> int:
@@ -168,6 +215,85 @@ async def get_income_total(user_id: int, since: datetime) -> float:
         return total
 
 
+DEFAULT_STARTING_DEBT = float(os.environ.get("STARTING_DEBT", "0"))
+
+
+async def get_starting_debt(user_id: int) -> float:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT starting_debt FROM settings WHERE user_id = ?", (user_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            await set_starting_debt(user_id, DEFAULT_STARTING_DEBT)
+            return DEFAULT_STARTING_DEBT
+        return row[0]
+
+
+async def set_starting_debt(user_id: int, amount: float):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO settings (user_id, starting_debt) VALUES (?, ?)
+               ON CONFLICT(user_id) DO UPDATE SET starting_debt = excluded.starting_debt""",
+            (user_id, amount)
+        )
+        await db.commit()
+
+
+async def add_savings_entry(user_id: int, entry_type: str, amount: float, note: str) -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO savings (user_id, type, amount, note, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (user_id, entry_type, amount, note, datetime.utcnow().isoformat())
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_savings_totals(user_id: int):
+    """Returns (total_saved, total_returned, total_withdrawn)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        totals = {}
+        for entry_type in ("save", "return", "withdraw"):
+            cur = await db.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM savings WHERE user_id = ? AND type = ?",
+                (user_id, entry_type)
+            )
+            (total,) = await cur.fetchone()
+            totals[entry_type] = total
+        return totals["save"], totals["return"], totals["withdraw"]
+
+
+async def get_last_savings_entry(user_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT id, type, amount, note, created_at
+               FROM savings WHERE user_id = ? ORDER BY id DESC LIMIT 1""",
+            (user_id,)
+        )
+        return await cur.fetchone()
+
+
+async def delete_savings_entry(entry_id: int, user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "DELETE FROM savings WHERE id = ? AND user_id = ?", (entry_id, user_id)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def get_savings_recent(user_id: int, limit: int = 10):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """SELECT id, type, amount, note, created_at
+               FROM savings WHERE user_id = ? ORDER BY id DESC LIMIT ?""",
+            (user_id, limit)
+        )
+        return await cur.fetchall()
+
+
 async def get_recent(user_id: int, limit: int = 10):
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -209,6 +335,13 @@ async def export_csv(user_id: int) -> io.StringIO:
         )
         income_rows = await cur.fetchall()
 
+        cur = await db.execute(
+            """SELECT id, type, amount, note, created_at
+               FROM savings WHERE user_id = ? ORDER BY id""",
+            (user_id,)
+        )
+        savings_rows = await cur.fetchall()
+
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["type", "id", "amount", "description", "category", "created_at"])
@@ -216,6 +349,8 @@ async def export_csv(user_id: int) -> io.StringIO:
         writer.writerow(["expense", r[0], r[1], r[2], r[3], r[4]])
     for r in income_rows:
         writer.writerow(["income", r[0], r[1], r[2], "", r[3]])
+    for r in savings_rows:
+        writer.writerow([r[1], r[0], r[2], r[3], "", r[4]])
     buf.seek(0)
     return buf
 

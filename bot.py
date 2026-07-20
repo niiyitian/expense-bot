@@ -1,10 +1,10 @@
 """
-Expense Tracker Telegram Bot
+Money Tracker Telegram Bot (expenses + income + savings/debt)
 
-Just send a message like "coffee 5.50" or "5.50 coffee" and the bot logs it.
-Tap a category button to tag it. Use /today, /week, /month for summaries,
-/export for a CSV dump, /undo to remove your last entry, /recent to browse
-and delete recent entries.
+Just send a message like "coffee 5.50" and the bot logs it as an expense.
+"+50 sold shoes" logs money in. "save 2000", "withdraw 300 rent", and
+"return 500" (or "repay 500") log savings/debt activity. Use /summary,
+/savings, /export, /undo, /recent as needed.
 
 Setup:
     1. Get a bot token from @BotFather on Telegram
@@ -77,6 +77,9 @@ def delete_keyboard(expense_id: int) -> InlineKeyboardMarkup:
 MENU_BUTTONS = {
     "log": "➕ Log",
     "money": "💰 Add Money",
+    "save": "🏦 Save",
+    "withdraw": "🏧 Withdraw",
+    "repay": "📉 Repay Debt",
     "summary": "📊 Summary",
     "recent": "📝 Recent",
     "categories": "📁 Categories",
@@ -84,9 +87,12 @@ MENU_BUTTONS = {
     "export": "📄 Export",
 }
 
-# Prompt text markers used to tell an expense reply apart from an income reply
+# Prompt text markers used to tell which flow a reply belongs to
 LOG_PROMPT_TEXT = "💸 What did you spend on?\nE.g. <code>coffee 5.50</code>"
 MONEY_PROMPT_TEXT = "💰 What did you receive, and for what?\nE.g. <code>50 sold shoes</code>"
+SAVE_PROMPT_TEXT = "🏦 How much are you putting into savings?\nE.g. <code>2000</code> or <code>2000 bonus</code>"
+WITHDRAW_PROMPT_TEXT = "🏧 How much are you withdrawing from savings?\nE.g. <code>300 rent</code>"
+REPAY_PROMPT_TEXT = "📉 How much are you repaying towards debt?\nE.g. <code>500</code>"
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
@@ -95,9 +101,10 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_BUTTONS["log"]), KeyboardButton(text=MENU_BUTTONS["money"])],
-            [KeyboardButton(text=MENU_BUTTONS["summary"]), KeyboardButton(text=MENU_BUTTONS["recent"])],
-            [KeyboardButton(text=MENU_BUTTONS["categories"]), KeyboardButton(text=MENU_BUTTONS["undo"])],
-            [KeyboardButton(text=MENU_BUTTONS["export"])],
+            [KeyboardButton(text=MENU_BUTTONS["save"]), KeyboardButton(text=MENU_BUTTONS["withdraw"])],
+            [KeyboardButton(text=MENU_BUTTONS["repay"]), KeyboardButton(text=MENU_BUTTONS["summary"])],
+            [KeyboardButton(text=MENU_BUTTONS["recent"]), KeyboardButton(text=MENU_BUTTONS["categories"])],
+            [KeyboardButton(text=MENU_BUTTONS["undo"]), KeyboardButton(text=MENU_BUTTONS["export"])],
         ],
         resize_keyboard=True,
         input_field_placeholder="Type an expense, e.g. coffee 5.50"
@@ -108,17 +115,41 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
 async def cmd_start(message: Message):
     await db.ensure_default_categories(message.from_user.id)
     await message.answer(
-        "👋 <b>Expense Tracker</b>\n\n"
+        "👋 <b>Money Tracker</b>\n\n"
         "Just send me a message like:\n"
         "<code>coffee 5.50</code> or <code>5.50 coffee</code>\n\n"
         "I'll log it and ask you to tag a category.\n\n"
         "Got money in (sold something, got paid back)? Send it with a "
-        "<code>+</code> in front, like <code>+50 sold shoes</code>, or use "
-        "the 💰 Add Money button.\n\n"
+        "<code>+</code> in front, like <code>+50 sold shoes</code>.\n\n"
+        "Putting money into savings, taking it out, or repaying debt? Just type "
+        "it naturally: <code>save 2000</code>, <code>withdraw 300 rent</code>, "
+        "<code>return 500</code> — or use the buttons.\n\n"
         "Tap the grid icon next to the emoji button anytime for quick actions.",
         parse_mode="HTML",
         reply_markup=main_menu_keyboard()
     )
+
+
+@dp.message(Command("rename"))
+async def cmd_rename(message: Message):
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Usage: <code>/rename OldName NewName</code>\n"
+            "E.g. <code>/rename Other Social</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    old_name, new_name = parts[1].strip(), parts[2].strip()
+    user_id = message.from_user.id
+    await db.ensure_default_categories(user_id)
+
+    ok = await db.rename_category(user_id, old_name, new_name)
+    if ok:
+        await message.answer(f"✅ Renamed '{old_name}' to '{new_name}' — past expenses updated too.")
+    else:
+        await message.answer(f"Couldn't find a category called '{old_name}'.")
 
 
 @dp.message(Command("categories"))
@@ -143,7 +174,8 @@ async def show_or_add_category(message: Message, new_cat: str | None):
     cats = await db.get_categories(user_id)
     await message.answer(
         "📁 <b>Your categories:</b>\n" + "\n".join(f"• {c}" for c in cats) +
-        "\n\nAdd a new one with: <code>/categories Groceries</code>",
+        "\n\nAdd a new one with: <code>/categories Groceries</code>"
+        "\nRename one with: <code>/rename Other Social</code>",
         parse_mode="HTML"
     )
 
@@ -200,10 +232,66 @@ async def send_combined_summary(message: Message):
             any_data = True
         net = income_total - total
         lines.append(f"<b>{label}:</b> spent ${total:.2f}, received ${income_total:.2f}, net ${net:.2f}")
-    if not any_data:
+
+    saved, returned, withdrawn = await db.get_savings_totals(user_id)
+    starting_debt = await db.get_starting_debt(user_id)
+    savings_balance = saved - withdrawn
+    debt_remaining = max(starting_debt - returned, 0)
+    lines.append(f"\n🏦 <b>Savings balance:</b> ${savings_balance:.2f}")
+    lines.append(f"🔴 <b>Debt remaining:</b> ${debt_remaining:.2f}")
+
+    if not any_data and saved == 0 and returned == 0 and withdrawn == 0:
         await message.answer("Nothing logged yet.")
         return
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(Command("savings"))
+async def cmd_savings(message: Message):
+    user_id = message.from_user.id
+    saved, returned, withdrawn = await db.get_savings_totals(user_id)
+    starting_debt = await db.get_starting_debt(user_id)
+    savings_balance = saved - withdrawn
+    debt_remaining = starting_debt - returned
+
+    lines = [
+        "🏦 <b>Savings & Debt</b>\n",
+        f"💰 Total saved: ${saved:.2f}",
+        f"🏧 Total withdrawn: ${withdrawn:.2f}",
+        f"<b>Savings balance: ${savings_balance:.2f}</b>\n",
+        f"📉 Total repaid: ${returned:.2f}",
+        f"🧾 Starting debt: ${starting_debt:.2f}",
+        f"<b>Debt remaining: ${max(debt_remaining, 0):.2f}</b>",
+    ]
+    if debt_remaining <= 0 and starting_debt > 0:
+        lines.append("\n🎉 Debt fully paid off!")
+        if debt_remaining < 0:
+            lines.append(f"(Overpaid by ${abs(debt_remaining):.2f})")
+
+    recent = await db.get_savings_recent(user_id, limit=5)
+    if recent:
+        lines.append("\n<b>Recent:</b>")
+        icons = {"save": "🏦", "return": "📉", "withdraw": "🏧"}
+        for _id, entry_type, amount, note, created_at in recent:
+            note_suffix = f" — {note}" if note else ""
+            lines.append(f"{icons[entry_type]} ${amount:.2f}{note_suffix} ({created_at[:10]})")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(Command("setdebt"))
+async def cmd_setdebt(message: Message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("Usage: <code>/setdebt 5340</code>", parse_mode="HTML")
+        return
+    try:
+        amount = float(parts[1].replace(",", "").replace("$", ""))
+    except ValueError:
+        await message.answer("Please provide a valid number, e.g. <code>/setdebt 5340</code>", parse_mode="HTML")
+        return
+    await db.set_starting_debt(message.from_user.id, amount)
+    await message.answer(f"✅ Starting debt set to ${amount:.2f}")
 
 
 @dp.message(Command("undo"))
@@ -211,21 +299,36 @@ async def cmd_undo(message: Message):
     user_id = message.from_user.id
     last_expense = await db.get_last_expense(user_id)
     last_income = await db.get_last_income(user_id)
+    last_savings = await db.get_last_savings_entry(user_id)
 
-    if not last_expense and not last_income:
+    candidates = []
+    if last_expense:
+        candidates.append(("expense", last_expense[4], last_expense))
+    if last_income:
+        candidates.append(("income", last_income[3], last_income))
+    if last_savings:
+        candidates.append(("savings", last_savings[4], last_savings))
+
+    if not candidates:
         await message.answer("Nothing to undo.")
         return
 
-    # Compare timestamps (both are ISO strings, so string comparison works) to
-    # find whichever was logged most recently, expense or income.
-    if last_income and (not last_expense or last_income[3] > last_expense[4]):
-        income_id, amount, desc, created_at = last_income
+    # Pick whichever was logged most recently (ISO timestamp strings compare correctly)
+    kind, _, row = max(candidates, key=lambda c: c[1])
+
+    if kind == "expense":
+        expense_id, amount, desc, cat, created_at = row
+        await db.delete_expense(expense_id, user_id)
+        await message.answer(f"🗑 Removed: ${amount:.2f} — {desc}")
+    elif kind == "income":
+        income_id, amount, desc, created_at = row
         await db.delete_income(income_id, user_id)
         await message.answer(f"🗑 Removed income: ${amount:.2f} — {desc}")
     else:
-        expense_id, amount, desc, cat, created_at = last_expense
-        await db.delete_expense(expense_id, user_id)
-        await message.answer(f"🗑 Removed: ${amount:.2f} — {desc}")
+        savings_id, entry_type, amount, note, created_at = row
+        label = {"save": "savings", "return": "debt repayment", "withdraw": "withdrawal"}[entry_type]
+        await db.delete_savings_entry(savings_id, user_id)
+        await message.answer(f"🗑 Removed {label}: ${amount:.2f}")
 
 
 @dp.message(Command("recent"))
@@ -269,6 +372,33 @@ async def cmd_money(message: Message):
     )
 
 
+@dp.message(Command("save"))
+async def cmd_save(message: Message):
+    await message.answer(
+        SAVE_PROMPT_TEXT,
+        parse_mode="HTML",
+        reply_markup=ForceReply(input_field_placeholder="2000")
+    )
+
+
+@dp.message(Command("withdraw"))
+async def cmd_withdraw(message: Message):
+    await message.answer(
+        WITHDRAW_PROMPT_TEXT,
+        parse_mode="HTML",
+        reply_markup=ForceReply(input_field_placeholder="300 rent")
+    )
+
+
+@dp.message(Command("repay"))
+async def cmd_repay(message: Message):
+    await message.answer(
+        REPAY_PROMPT_TEXT,
+        parse_mode="HTML",
+        reply_markup=ForceReply(input_field_placeholder="500")
+    )
+
+
 @dp.message(F.text == MENU_BUTTONS["log"])
 async def btn_log(message: Message):
     await cmd_log(message)
@@ -277,6 +407,21 @@ async def btn_log(message: Message):
 @dp.message(F.text == MENU_BUTTONS["money"])
 async def btn_money(message: Message):
     await cmd_money(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["save"])
+async def btn_save(message: Message):
+    await cmd_save(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["withdraw"])
+async def btn_withdraw(message: Message):
+    await cmd_withdraw(message)
+
+
+@dp.message(F.text == MENU_BUTTONS["repay"])
+async def btn_repay(message: Message):
+    await cmd_repay(message)
 
 
 @dp.message(F.text == MENU_BUTTONS["summary"])
@@ -304,21 +449,64 @@ async def btn_export(message: Message):
     await cmd_export(message)
 
 
-def is_income_message(message: Message) -> bool:
-    if message.text.strip().startswith("+"):
-        return True
+# Verbs recognized when typed directly, e.g. "save 2000", "withdraw 300 rent"
+SAVE_WORDS = {"save", "saved", "saving"}
+WITHDRAW_WORDS = {"withdraw", "withdrew", "withdrawing"}
+RETURN_WORDS = {"return", "returned", "returning", "repay", "repaid", "pay", "paid"}
+SAVINGS_VERB_RE = re.compile(
+    r"^(" + "|".join(SAVE_WORDS | WITHDRAW_WORDS | RETURN_WORDS) + r")\s+(.*)$",
+    re.IGNORECASE
+)
+
+
+def detect_entry_type(message: Message) -> tuple[str, str]:
+    """Returns (entry_type, text_to_parse) where entry_type is one of
+    'expense', 'income', 'save', 'withdraw', 'return'."""
+    text = message.text.strip()
+
+    # Reply to one of our prompts takes priority — bare "2000" replies work
     if message.reply_to_message and message.reply_to_message.text:
-        return message.reply_to_message.text.startswith("💰")
-    return False
+        rt = message.reply_to_message.text
+        if rt.startswith("💸"):
+            return "expense", text
+        if rt.startswith("💰"):
+            return "income", text.lstrip("+").strip()
+        if rt.startswith("🏦"):
+            return "save", text
+        if rt.startswith("🏧"):
+            return "withdraw", text
+        if rt.startswith("📉"):
+            return "return", text
+
+    # Verb-led typed message, e.g. "save 2000 bonus"
+    m = SAVINGS_VERB_RE.match(text)
+    if m:
+        verb, rest = m.group(1).lower(), m.group(2)
+        if verb in SAVE_WORDS:
+            return "save", rest
+        if verb in WITHDRAW_WORDS:
+            return "withdraw", rest
+        return "return", rest
+
+    # '+' prefix shortcut for income
+    if text.startswith("+"):
+        return "income", text.lstrip("+").strip()
+
+    return "expense", text
 
 
 @dp.message(F.text & ~F.text.startswith("/"))
-async def handle_expense_text(message: Message):
-    if is_income_message(message):
-        await handle_income_text(message)
+async def handle_money_text(message: Message):
+    entry_type, text = detect_entry_type(message)
+
+    if entry_type == "income":
+        await handle_income_text(message, text)
+        return
+    if entry_type in ("save", "withdraw", "return"):
+        await handle_savings_text(message, entry_type, text)
         return
 
-    text = message.text.lstrip("+").strip()
+    # entry_type == "expense"
     parsed = parse_expense(text)
     if not parsed:
         await message.answer(
@@ -342,8 +530,7 @@ async def handle_expense_text(message: Message):
     )
 
 
-async def handle_income_text(message: Message):
-    text = message.text.lstrip("+").strip()
+async def handle_income_text(message: Message, text: str):
     parsed = parse_expense(text)
     if not parsed:
         await message.answer(
@@ -359,6 +546,45 @@ async def handle_income_text(message: Message):
     user_id = message.from_user.id
     await db.add_income(user_id, amount, description)
     await message.answer(f"💰 Added <b>${amount:.2f}</b> — {description}", parse_mode="HTML")
+
+
+async def handle_savings_text(message: Message, entry_type: str, text: str):
+    parsed = parse_expense(text)
+    if not parsed:
+        example = {"save": "2000", "withdraw": "300 rent", "return": "500"}[entry_type]
+        await message.answer(
+            f"I couldn't find an amount in that message. Try something like "
+            f"<code>{example}</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    amount, note = parsed
+    if note == "Uncategorized expense":
+        note = ""
+    user_id = message.from_user.id
+    await db.add_savings_entry(user_id, entry_type, amount, note)
+
+    saved, returned, withdrawn = await db.get_savings_totals(user_id)
+    starting_debt = await db.get_starting_debt(user_id)
+    savings_balance = saved - withdrawn
+    debt_remaining = max(starting_debt - returned, 0)
+
+    if entry_type == "save":
+        await message.answer(
+            f"🏦 Saved <b>${amount:.2f}</b>\nSavings balance: ${savings_balance:.2f}",
+            parse_mode="HTML"
+        )
+    elif entry_type == "withdraw":
+        await message.answer(
+            f"🏧 Withdrew <b>${amount:.2f}</b>\nSavings balance: ${savings_balance:.2f}",
+            parse_mode="HTML"
+        )
+    else:
+        await message.answer(
+            f"📉 Repaid <b>${amount:.2f}</b> towards debt\nDebt remaining: ${debt_remaining:.2f}",
+            parse_mode="HTML"
+        )
 
 
 @dp.callback_query(F.data.startswith("cat:"))
@@ -387,9 +613,15 @@ async def set_menu_button():
     await bot.set_my_commands([
         BotCommand(command="log", description="Log a new expense"),
         BotCommand(command="money", description="Add money received (sales, transfers)"),
+        BotCommand(command="save", description="Put money into savings"),
+        BotCommand(command="withdraw", description="Withdraw money from savings"),
+        BotCommand(command="repay", description="Repay towards debt"),
+        BotCommand(command="savings", description="Savings balance & debt remaining"),
+        BotCommand(command="setdebt", description="Set your starting debt amount"),
         BotCommand(command="summary", description="Today / week / month spending"),
         BotCommand(command="recent", description="Browse & delete recent entries"),
         BotCommand(command="categories", description="View/add categories"),
+        BotCommand(command="rename", description="Rename a category (updates past expenses too)"),
         BotCommand(command="undo", description="Remove your last entry"),
         BotCommand(command="export", description="Download all expenses as CSV"),
         BotCommand(command="today", description="Today's spending only"),

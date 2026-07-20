@@ -1,7 +1,7 @@
-# Expense Tracker Telegram Bot
+# Money Tracker Telegram Bot
 
-Log expenses by just typing them naturally. Everything is stored in a single
-local SQLite file (`expenses.db`) — easy to back up, inspect, or edit.
+Tracks spending, income, and savings/debt in one bot. Everything is stored in
+a single local SQLite file (`expenses.db`) — easy to back up, inspect, or edit.
 
 ## Setup
 
@@ -17,6 +17,7 @@ local SQLite file (`expenses.db`) — easy to back up, inspect, or edit.
 3. **Set your token and run**
    ```bash
    export BOT_TOKEN="123456:ABC-your-token-here"
+   export STARTING_DEBT="5340"   # optional, your current debt balance
    python bot.py
    ```
 
@@ -24,22 +25,32 @@ That's it — the bot will start polling. Message it on Telegram to try it out.
 
 ## Usage
 
-Just send a message like:
-```
-coffee 5.50
-5.50 coffee
-$12 lunch with team
-```
+Just type naturally — no button needed for any of these:
 
-The bot logs it and shows category buttons to tap. Then use:
+| You type | What happens |
+|---|---|
+| `coffee 5.50` | Logs an expense, prompts you to tag a category |
+| `+50 sold shoes` | Logs money received (sales, transfers, refunds) |
+| `save 2000` or `save 2000 bonus` | Adds to your savings balance |
+| `withdraw 300 rent` | Takes money out of savings |
+| `return 500` or `repay 500` or `paid 500` | Logs a debt repayment |
+
+Or use the button grid (tap the grid icon next to the emoji button) for the
+same actions with guided prompts.
+
+## Commands
 
 | Command | What it does |
 |---|---|
-| `/today` `/week` `/month` | Spending summary by category |
-| `/recent` | Last 10 entries, each with a delete button |
-| `/undo` | Remove your most recent entry |
+| `/summary` | Spending/income for today, week, month + savings balance & debt remaining |
+| `/savings` | Full savings & debt breakdown, plus recent activity |
+| `/setdebt 5340` | Set or correct your starting debt amount |
+| `/today` `/week` `/month` | Spending + income for just that period |
+| `/recent` | Last 10 expenses, each with a delete button |
+| `/undo` | Remove your most recent entry (expense, income, or savings — whichever was last) |
 | `/categories` | List categories; `/categories Groceries` adds one |
-| `/export` | Download all expenses as a CSV file |
+| `/rename Other Social` | Rename a category, retagging past expenses too |
+| `/export` | Download everything as a CSV file |
 
 ## Viewing/editing the raw data
 
@@ -64,17 +75,18 @@ than in a terminal window. Easiest options:
    service, since this bot doesn't listen on a port)
 4. Go to your service's **Variables** tab and add:
    - `BOT_TOKEN` = your token from BotFather
-5. **Important — add a Volume**, or your expenses will be wiped on every
-   redeploy:
+   - `STARTING_DEBT` = your current debt amount (optional, e.g. `5340`) — only
+     used the very first time; after that use `/setdebt` to correct it
+5. **Important — add a Volume**, or your data will be wiped on every redeploy:
    - Go to your service → **Settings → Volumes → New Volume**
    - Set the mount path to `/data`
    - Add another variable: `DB_PATH` = `/data/expenses.db`
 6. Deploy. Check the **Deployments → Logs** tab to confirm it started
-   without errors — you should see aiogram's polling log lines.
+   without errors.
 
-## Notes on your "savings bot"
+## Migrating from your old savings bot
 
-If you're not sure where that other bot's data lives, it's worth checking
-whichever server or notebook it's deployed from for a `.db`, `.json`, or
-`.csv` file, or checking if it logs to Google Sheets — happy to help track
-it down if you paste the bot's code or point me to the repo.
+This bot's savings/debt numbers start at zero (aside from `STARTING_DEBT`).
+Your old savings bot's history isn't automatically imported — if you want your
+past save/return entries carried over, share that bot's `savings.db` and I can
+write a one-off migration script.
