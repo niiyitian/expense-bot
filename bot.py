@@ -96,8 +96,8 @@ REPAY_PROMPT_TEXT = "📉 How much are you repaying towards debt?\nE.g. <code>50
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
-    # is_persistent=False (the default) means this stays tucked behind the
-    # grid-toggle icon next to the emoji button, instead of always being open.
+    # is_persistent=True keeps this permanently open below the input field,
+    # instead of tucked behind a toggle icon.
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=MENU_BUTTONS["log"]), KeyboardButton(text=MENU_BUTTONS["money"])],
@@ -107,6 +107,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=MENU_BUTTONS["undo"]), KeyboardButton(text=MENU_BUTTONS["export"])],
         ],
         resize_keyboard=True,
+        is_persistent=True,
         input_field_placeholder="Type an expense, e.g. coffee 5.50"
     )
 
